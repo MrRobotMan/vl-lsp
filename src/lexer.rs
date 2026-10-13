@@ -1,13 +1,13 @@
 use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
-struct Token<'t> {
+pub struct Token<'t> {
     span: Span,
     kind: TokenKind<'t>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum TokenKind<'t> {
+pub enum TokenKind<'t> {
     OpenParen,
     CloseParen,
     Dot,
@@ -22,11 +22,11 @@ enum TokenKind<'t> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum ErrorKind {
+pub enum ErrorKind {
     UnterminatedString,
     UnterminatedBlockComment,
 }
 
-fn tokenize<'t>(source: &'t str) -> Vec<Token<'t>> {
+pub fn tokenize<'t>(_source: &'t str) -> Vec<Token<'t>> {
     todo!()
 }
