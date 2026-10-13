@@ -1,6 +1,5 @@
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Span {
-    pub line: usize,
-    pub col: usize,
+    pub start: usize,
     pub length: usize,
 }
