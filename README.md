@@ -1,5 +1,5 @@
 # vl-lsp - An AutoLISP / VisualLisp Language Server
-Language server meant for Helix and other editors to help write VisualLisp / AutoLisp LSP scripts.
+Language server meant for Helix and other editors to help write VisualLisp / AutoLisp scripts.
 
 
 # Scope
