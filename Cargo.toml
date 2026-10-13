@@ -9,6 +9,7 @@ name = "vl-lsp"
 
 [dependencies]
 crop = "0.4.3"
+dashmap = "6.2.1"
 dirs = "7.0.0"
 tokio = { version = "1.53.2", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
 tower-lsp-server = "0.23.0"

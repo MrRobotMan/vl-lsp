@@ -1,4 +1,4 @@
-use crate::span::Span;
+use super::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token<'t> {
@@ -28,5 +28,5 @@ pub enum ErrorKind {
 }
 
 pub fn tokenize<'t>(_source: &'t str) -> Vec<Token<'t>> {
-    todo!()
+    Vec::new()
 }

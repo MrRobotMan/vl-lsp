@@ -703,6 +703,7 @@ name = "vl-lsp"
 version = "0.1.0"
 dependencies = [
  "crop",
+ "dashmap",
  "dirs",
  "tokio",
  "tower-lsp-server",
