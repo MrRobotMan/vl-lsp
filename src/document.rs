@@ -74,12 +74,12 @@ impl Document {
     }
 
     /// Show the text within a span may panic if the slice is not valid.
-    pub fn text_of_unchecked(&self, span: Span) -> &str {
-        span.slice_unchecked(&self.text)
+    pub fn text_of(&self, span: Span) -> &str {
+        span.slice(&self.text)
     }
 
     /// Show the text within a span.
-    pub fn text_of(&self, span: Span) -> Option<&str> {
+    pub fn try_text_of(&self, span: Span) -> Option<&str> {
         span.try_slice(&self.text)
     }
 
@@ -121,7 +121,7 @@ pub struct Span {
 
 impl Span {
     /// Extract a subsection of text. The span must fit entirely into the text.
-    pub fn slice_unchecked(self, text: &str) -> &str {
+    pub fn slice(self, text: &str) -> &str {
         &text[self.start..self.start + self.length]
     }
 

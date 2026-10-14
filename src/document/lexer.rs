@@ -14,6 +14,15 @@ pub struct Token {
     kind: TokenKind,
 }
 
+impl Token {
+    pub fn span(&self) -> Span {
+        self.span
+    }
+    pub fn kind(&self) -> TokenKind {
+        self.kind
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     OpenParen,
@@ -55,14 +64,14 @@ impl From<&str> for TokenKind {
                 }
                 let mut dots = 0;
                 let mut exp = 0;
-                let mut at_exp = false;
+                let mut prev = first;
                 for ch in value.chars().skip(1) {
                     match ch {
                         '.' => {
                             dots += 1;
                             // Decimal powers aren't permitted
                             if exp == 1 {
-                                return Self::Error(ErrorKind::DecimalExponent);
+                                return Self::Symbol;
                             }
                             if dots > 1 {
                                 return Self::Symbol;
@@ -73,12 +82,12 @@ impl From<&str> for TokenKind {
                             if exp > 1 {
                                 return Self::Symbol;
                             }
-                            at_exp = true;
                         }
-                        '+' | '-' if at_exp => {}
+                        '+' | '-' if "eE".contains(prev) => {}
                         c if !c.is_ascii_digit() => return Self::Symbol,
                         _ => {}
                     }
+                    prev = ch;
                 }
                 if let Some((before, _)) = value.split_once('.')
                     && !before.chars().any(|c| c.is_ascii_digit())
@@ -104,7 +113,6 @@ impl From<&str> for TokenKind {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
-    DecimalExponent,
     UnterminatedString,
     UnterminatedBlockComment,
 }
@@ -428,6 +436,11 @@ mod tests {
         assert_eq!(kinds("1-"), [Symbol]);
     }
 
+    #[test]
+    fn test_bad_exponent_sign_location() {
+        assert_eq!(kinds("1e3-5"), [Symbol])
+    }
+
     // --- symbols ---
     #[test]
     fn test_plain_symbol() {
@@ -496,7 +509,7 @@ mod tests {
 
     #[test]
     fn test_no_decimal_exponent() {
-        assert_eq!(kinds("6e1.5"), [Error(DecimalExponent)])
+        assert_eq!(kinds("6e1.5"), [Symbol])
     }
 
     // --- strings ---
