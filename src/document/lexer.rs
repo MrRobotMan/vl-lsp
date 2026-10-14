@@ -26,6 +26,7 @@ pub enum TokenKind {
     Quote,
     Comment,
     BlockComment,
+    Newline,
     Whitespace,
     Error(ErrorKind),
 }
@@ -94,9 +95,7 @@ impl<'a> Lexer<'a> {
         loop {
             match self.peek() {
                 None => break,
-                Some('\r') | Some('\n') => {
-                    let _ = self.next();
-                }
+                Some('\r') | Some('\n') => self.newline(&mut tokens),
                 Some(' ') => self.whitespace(&mut tokens),
                 Some('(') | Some(')') | Some('\'') => self.atom(&mut tokens),
                 Some('"') => self.string(&mut tokens),
@@ -121,6 +120,18 @@ impl<'a> Lexer<'a> {
             }
         };
         tokens.push(Token { span, kind })
+    }
+
+    fn newline(&mut self, tokens: &mut Vec<Token>) {
+        let (start, chr) = self.next();
+        if chr == '\r' && self.peek() == Some('\n') {
+            // CLRF ending
+            let _ = self.next();
+        }
+        let end = self.next_start();
+        let span = (start, end - start).into();
+        let kind = TokenKind::Newline;
+        tokens.push(Token { span, kind });
     }
 
     fn whitespace(&mut self, tokens: &mut Vec<Token>) {
@@ -275,7 +286,7 @@ mod tests {
     }
     #[test]
     fn test_whitespace_only() {
-        assert_eq!(kinds(" \t\r\n "), [Whitespace, Whitespace]);
+        assert_eq!(kinds(" \t\r\n "), [Whitespace, Newline, Whitespace]);
     }
     #[test]
     fn test_parens() {
@@ -459,7 +470,7 @@ mod tests {
     // --- comments ---
     #[test]
     fn test_line_comment() {
-        assert_eq!(kinds("; hi\nx"), [Comment, Symbol]);
+        assert_eq!(kinds("; hi\nx"), [Comment, Newline, Symbol]);
     }
 
     #[test]
@@ -469,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_line_comment_crlf() {
-        assert_eq!(kinds("; a\r\nb"), [Comment, Symbol]);
+        assert_eq!(kinds("; a\r\nb"), [Comment, Newline, Symbol]);
     }
 
     #[test]
