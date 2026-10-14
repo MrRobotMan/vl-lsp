@@ -33,8 +33,8 @@ language-servers = ["vl-lsp"]
 
 [language-server.vl-lsp]
 logLevel = "DEBUG"
-logLocation = "~/.local/state/vl-lsp/log.log"
-signaturesLocation = "~/.config/vl-lsp/signatures.lsp"
+logLocation = "~/.local/state/vl_lsp/log.log"
+signaturesLocation = "~/.config/vl_lsp/signatures.lsp"
 ```
 
 

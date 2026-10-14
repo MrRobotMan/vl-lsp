@@ -1,32 +1,585 @@
-use super::Span;
+use std::{iter::Peekable, str::CharIndices};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Token<'t> {
-    span: Span,
-    kind: TokenKind<'t>,
+use super::Span;
+use tracing::error;
+
+pub fn tokenize(source: &str) -> Vec<Token> {
+    let it = source.char_indices().peekable();
+    Lexer::new(source, it).tokens()
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind<'t> {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Token {
+    span: Span,
+    kind: TokenKind,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum TokenKind {
     OpenParen,
     CloseParen,
+    String,
+    Real,
+    Integer,
+    Symbol,
     Dot,
     Quote,
-    Comment(&'t str),
-    BlockComment(&'t str),
-    String(&'t str),
-    Real(f64),
-    Integer(i32),
-    Symbol(&'t str),
+    Comment,
+    BlockComment,
+    Whitespace,
     Error(ErrorKind),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+impl From<String> for TokenKind {
+    fn from(value: String) -> Self {
+        let first = value.chars().next().unwrap_or(' '); // Space is ok for empty string. Using this to check for numbers.
+        match value.as_str() {
+            "." => Self::Dot,
+            _ if "-+1234567890".contains(first) => {
+                if value == "+" || value == "-" {
+                    return Self::Symbol;
+                }
+                let mut dots = 0;
+                let mut exp = 0;
+                let mut at_exp = false;
+                for ch in value.chars().skip(1) {
+                    match ch {
+                        '.' => {
+                            dots += 1;
+                            if dots > 1 {
+                                return Self::Symbol;
+                            }
+                        }
+                        'e' | 'E' => {
+                            exp += 1;
+                            if exp > 1 {
+                                return Self::Symbol;
+                            }
+                            at_exp = true;
+                        }
+                        '+' | '-' if at_exp => {}
+                        c if !c.is_ascii_digit() => return Self::Symbol,
+                        _ => {}
+                    }
+                }
+                if dots == 1 || exp == 1 {
+                    Self::Real
+                } else {
+                    Self::Integer
+                }
+            }
+            _ => Self::Symbol,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
     UnterminatedString,
     UnterminatedBlockComment,
 }
 
-pub fn tokenize<'t>(_source: &'t str) -> Vec<Token<'t>> {
-    Vec::new()
+struct Lexer<'a> {
+    source: &'a str,
+    it: Peekable<CharIndices<'a>>,
+}
+
+impl<'a> Lexer<'a> {
+    fn new(source: &'a str, it: Peekable<CharIndices<'a>>) -> Self {
+        Self { source, it }
+    }
+
+    fn tokens(mut self) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        loop {
+            match self.peek() {
+                None => break,
+                Some('\r') | Some('\n') => {
+                    let _ = self.next();
+                }
+                Some(' ') => self.whitespace(&mut tokens),
+                Some('(') | Some(')') | Some('\'') => self.atom(&mut tokens),
+                Some('"') => self.string(&mut tokens),
+                Some(';') => self.comment(&mut tokens),
+                _ => self.word(&mut tokens),
+            }
+        }
+        tokens
+    }
+
+    fn atom(&mut self, tokens: &mut Vec<Token>) {
+        let (index, atom) = self.next();
+        let step = self.next_start();
+        let span = (index, step - index).into();
+        let kind = match atom {
+            '(' => TokenKind::OpenParen,
+            ')' => TokenKind::CloseParen,
+            '\'' => TokenKind::Quote,
+            _ => {
+                error!("Tried to process {atom} as atom.");
+                return;
+            }
+        };
+        tokens.push(Token { span, kind })
+    }
+
+    fn whitespace(&mut self, tokens: &mut Vec<Token>) {
+        let (start, _) = self.next();
+        while [Some(' '), Some('\t')].contains(&self.peek()) {
+            let _ = self.next();
+        }
+        let end = self.next_start();
+        tokens.push(Token {
+            span: (start, end - start).into(),
+            kind: TokenKind::Whitespace,
+        });
+    }
+
+    fn comment(&mut self, tokens: &mut Vec<Token>) {
+        let (start, _) = self.next(); // Comment start, ;
+        match self.peek() {
+            Some('|') => self.block_comment(start, tokens),
+            _ => self.line_comment(start, tokens),
+        }
+    }
+
+    fn line_comment(&mut self, start: usize, tokens: &mut Vec<Token>) {
+        while ![Some('\n'), Some('\r'), None].contains(&self.peek()) {
+            let _ = self.next();
+        }
+        let end = self.next_start();
+        tokens.push(Token {
+            span: (start, end - start).into(),
+            kind: TokenKind::Comment,
+        });
+    }
+
+    fn block_comment(&mut self, start: usize, tokens: &mut Vec<Token>) {
+        loop {
+            match self.peek() {
+                Some('|') => {
+                    let _pipe = self.next();
+                    // End of block comment.
+                    if let Some(';') = self.peek() {
+                        let _semicolon = self.next();
+                        let end = self.next_start();
+                        tokens.push(Token {
+                            span: (start, end - start).into(),
+                            kind: TokenKind::BlockComment,
+                        });
+                        return;
+                    }
+                }
+                None => {
+                    let end = self.next_start();
+                    let span = (start, end - start).into();
+                    let kind = TokenKind::Error(ErrorKind::UnterminatedBlockComment);
+                    tokens.push(Token { span, kind });
+                    return;
+                }
+                _ => {
+                    let _ = self.next();
+                }
+            }
+        }
+    }
+
+    fn string(&mut self, tokens: &mut Vec<Token>) {
+        let (start, _) = self.next();
+        let mut escape_next = false;
+        loop {
+            match self.peek() {
+                None => {
+                    let span = (start, self.next_start() - start).into();
+                    let kind = TokenKind::Error(ErrorKind::UnterminatedString);
+                    tokens.push(Token { span, kind });
+                    return;
+                }
+                Some('"') if !escape_next => {
+                    let _close_quote = self.next();
+                    let end = self.next_start();
+                    let span = (start, end - start).into();
+                    let kind = TokenKind::String;
+                    tokens.push(Token { span, kind });
+                    return;
+                }
+                Some(chr) => {
+                    if escape_next && chr == '\\' {
+                        escape_next = false;
+                    } else {
+                        escape_next = chr == '\\';
+                    }
+                    let _ = self.next();
+                }
+            }
+        }
+    }
+
+    fn word(&mut self, tokens: &mut Vec<Token>) {
+        let delimiters = [
+            Some(' '),
+            Some('\t'),
+            Some('\n'),
+            Some('\r'),
+            Some('\''),
+            Some('"'),
+            Some(';'),
+            Some('('),
+            Some(')'),
+            None,
+        ];
+        let mut word = String::new();
+        let (start, chr) = self.next();
+        word.push(chr);
+        while !delimiters.contains(&self.peek()) {
+            word.push(self.next().1);
+        }
+        let span = (start, self.next_start() - start).into();
+        let kind = word.into();
+        tokens.push(Token { span, kind });
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.it.peek().map(|(_, c)| *c)
+    }
+
+    fn next(&mut self) -> (usize, char) {
+        match self.it.next() {
+            Some(v) => v,
+            None => {
+                error!("Tried calling next without peeking first.");
+                (self.source.len(), self.source.chars().last().unwrap())
+            }
+        }
+    }
+
+    fn next_start(&mut self) -> usize {
+        self.it.peek().map_or(self.source.len(), |(i, _)| *i)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ErrorKind::*;
+    use TokenKind::*;
+
+    fn kinds(src: &str) -> Vec<TokenKind> {
+        tokenize(src).into_iter().map(|t| t.kind).collect()
+    }
+
+    // --- structure ---
+    #[test]
+    fn test_empty_input() {
+        assert!(tokenize("").is_empty());
+    }
+    #[test]
+    fn test_whitespace_only() {
+        assert_eq!(kinds(" \t\r\n "), [Whitespace, Whitespace]);
+    }
+    #[test]
+    fn test_parens() {
+        assert_eq!(kinds("()"), [OpenParen, CloseParen]);
+    }
+
+    #[test]
+    fn test_nested() {
+        assert_eq!(
+            kinds("(a (b))"),
+            [
+                OpenParen, Symbol, Whitespace, OpenParen, Symbol, CloseParen, CloseParen
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quote_list() {
+        assert_eq!(kinds("'(a)"), [Quote, OpenParen, Symbol, CloseParen]);
+    }
+
+    #[test]
+    fn test_dotted_pair() {
+        assert_eq!(
+            kinds("(a . b)"),
+            [
+                OpenParen, Symbol, Whitespace, Dot, Whitespace, Symbol, CloseParen
+            ]
+        );
+    }
+
+    // --- numbers ---
+    #[test]
+    fn test_integer() {
+        assert_eq!(kinds("42"), [Integer]);
+    }
+
+    #[test]
+    fn test_negative_integer() {
+        assert_eq!(kinds("-7"), [Integer]);
+    }
+
+    #[test]
+    fn test_real() {
+        assert_eq!(kinds("3.4"), [Real]);
+    }
+
+    #[test]
+    fn test_negative_real() {
+        assert_eq!(kinds("-2.5"), [Real]);
+    }
+
+    #[test]
+    fn test_real_exponent() {
+        assert_eq!(kinds("1.5e-3"), [Real]);
+    }
+
+    #[test]
+    fn test_lone_minus_is_symbol() {
+        assert_eq!(
+            kinds("(- 5 2)"),
+            [
+                OpenParen, Symbol, Whitespace, Integer, Whitespace, Integer, CloseParen
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dot_between_ints_is_dot() {
+        assert_eq!(
+            kinds("(1 . 2)"),
+            [
+                OpenParen, Integer, Whitespace, Dot, Whitespace, Integer, CloseParen
+            ]
+        );
+    }
+
+    #[test]
+    fn test_one_plus_is_symbol() {
+        assert_eq!(kinds("1+"), [Symbol]);
+    }
+
+    #[test]
+    fn test_one_minus_is_symbol() {
+        assert_eq!(kinds("1-"), [Symbol]);
+    }
+
+    // --- symbols ---
+    #[test]
+    fn test_plain_symbol() {
+        assert_eq!(kinds("setq"), [Symbol]);
+    }
+
+    #[test]
+    fn test_case_is_preserved() {
+        assert_eq!(kinds("SetQ"), [Symbol]);
+    }
+
+    #[test]
+    fn test_command_prefix() {
+        assert_eq!(kinds("c:foo"), [Symbol]);
+    }
+
+    #[test]
+    fn test_special_var_stars() {
+        assert_eq!(kinds("*error*"), [Symbol]);
+    }
+
+    #[test]
+    fn test_operators_are_symbols() {
+        assert_eq!(
+            kinds("(<= a b)"),
+            [
+                OpenParen, Symbol, Whitespace, Symbol, Whitespace, Symbol, CloseParen
+            ]
+        );
+    }
+
+    #[test]
+    fn test_nil_and_t_are_symbols() {
+        assert_eq!(kinds("nil T"), [Symbol, Whitespace, Symbol]);
+    }
+
+    #[test]
+    fn test_symbol_start_with_number() {
+        assert_eq!(kinds("3dc"), [Symbol]);
+    }
+
+    // --- strings ---
+    #[test]
+    fn test_simple_string() {
+        assert_eq!(kinds(r#""hi""#), [String]);
+    }
+
+    #[test]
+    fn test_empty_string() {
+        assert_eq!(kinds(r#""""#), [String]);
+    }
+
+    #[test]
+    fn test_escaped_quote() {
+        assert_eq!(kinds(r#""a\"b""#), [String]);
+    }
+
+    #[test]
+    fn test_escaped_backslash_then_close() {
+        assert_eq!(kinds(r#""a\\" x"#), [String, Whitespace, Symbol]);
+    }
+
+    #[test]
+    fn test_paren_inside_string() {
+        assert_eq!(kinds(r#"("(")"#), [OpenParen, String, CloseParen]);
+    }
+
+    #[test]
+    fn test_semicolon_inside_string() {
+        assert_eq!(kinds(r#""a;b""#), [String]);
+    }
+
+    #[test]
+    fn test_multiline_string() {
+        assert_eq!(kinds("\"a\nb\""), [String]);
+    }
+
+    #[test]
+    fn test_unterminated_string() {
+        assert_eq!(
+            tokenize("\"abc"),
+            [Token {
+                span: (0, 4).into(),
+                kind: Error(UnterminatedString)
+            }]
+        );
+    }
+
+    #[test]
+    fn test_string_ending_in_lone_backslash_is_unterminated() {
+        assert_eq!(kinds("\"abc\\\""), [Error(UnterminatedString)]);
+    }
+
+    // --- comments ---
+    #[test]
+    fn test_line_comment() {
+        assert_eq!(kinds("; hi\nx"), [Comment, Symbol]);
+    }
+
+    #[test]
+    fn test_line_comment_at_eof() {
+        assert_eq!(kinds("; hi"), [Comment]);
+    }
+
+    #[test]
+    fn test_line_comment_crlf() {
+        assert_eq!(kinds("; a\r\nb"), [Comment, Symbol]);
+    }
+
+    #[test]
+    fn test_paren_in_line_comment() {
+        assert_eq!(kinds("; )"), [Comment]);
+    }
+
+    #[test]
+    fn test_block_comment() {
+        assert_eq!(kinds(";| x |; y"), [BlockComment, Whitespace, Symbol]);
+    }
+
+    #[test]
+    fn test_block_comment_inline() {
+        assert_eq!(
+            kinds("(a ;| x |; b)"),
+            [
+                OpenParen,
+                Symbol,
+                Whitespace,
+                BlockComment,
+                Whitespace,
+                Symbol,
+                CloseParen
+            ]
+        );
+    }
+
+    #[test]
+    fn test_block_comment_multiline() {
+        assert_eq!(kinds(";| a\nb |;"), [BlockComment]);
+    }
+
+    #[test]
+    fn test_block_comment_hides_line_comment_marker() {
+        assert_eq!(kinds(";| ; |; x"), [BlockComment, Whitespace, Symbol]);
+    }
+
+    #[test]
+    fn test_block_comment_hides_pipe() {
+        assert_eq!(kinds(";| | ; |;"), [BlockComment]);
+    }
+
+    #[test]
+    fn test_unterminated_block_comment() {
+        assert_eq!(
+            tokenize(";| oops"),
+            [Token {
+                span: (0, 7).into(),
+                kind: Error(UnterminatedBlockComment)
+            }]
+        );
+    }
+
+    // --- spans (start + length, in BYTES) ---
+    #[test]
+    fn test_spans_simple() {
+        assert_eq!(
+            tokenize("(ab)"),
+            [
+                Token {
+                    span: (0, 1).into(),
+                    kind: OpenParen
+                },
+                Token {
+                    span: (1, 2).into(),
+                    kind: Symbol
+                },
+                Token {
+                    span: (3, 1).into(),
+                    kind: CloseParen
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spans_with_whitespace() {
+        let t = tokenize("a   b");
+        assert_eq!((t[2].span.start, t[2].span.length), (4, 1));
+    }
+
+    #[test]
+    fn test_spans_multibyte_utf8() {
+        // 'é' is 2 bytes, so the string token is 4 bytes and 'x' starts at byte 5
+        let t = tokenize("\"é\" x");
+        assert_eq!(t[0].span, (0, 4).into());
+        assert_eq!(t[1].span, (4, 1).into());
+        assert_eq!(t[2].span, (5, 1).into());
+    }
+
+    #[test]
+    fn test_spans_ordered_and_in_bounds() {
+        let src = "(defun c:f (/ a) ; c\n (setq a 1.5 s \"x\"))";
+        let mut end = 0;
+        let tokens = tokenize(src);
+        for t in tokens {
+            assert!(t.span.start >= end);
+            end = t.span.start + t.span.length;
+            assert!(end <= src.len());
+        }
+    }
+
+    // --- robustness ---
+    #[test]
+    fn test_never_panics_on_garbage() {
+        for s in [
+            "\"", ";|", "\\", ")(", "'", ".", "\u{0}", "\r\n\r\n", "|;", "é", "-", "((((",
+        ] {
+            let _ = tokenize(s);
+        }
+    }
 }

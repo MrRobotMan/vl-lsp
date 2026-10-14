@@ -2,10 +2,11 @@ mod ast;
 mod lexer;
 mod parser;
 
+/// Contents of one document.
 #[derive(Debug, Clone, Default)]
 pub struct Document {
     text: String,
-    line_starts: Vec<usize>, // Byte positions of each line beginning
+    line_start_offsets: Vec<usize>, // Byte positions of each line start
 }
 
 impl Document {
@@ -24,37 +25,54 @@ impl Document {
     }
 
     /// Turn a character offset into a `Position`
-    pub fn to_position(&self, offset: usize) -> Position {
+    pub fn to_position(&self, mut offset: usize) -> Position {
+        offset = offset.min(self.text.len());
+        while !self.text.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let line = self
-            .line_starts
+            .line_start_offsets
             .partition_point(|pos| *pos <= offset)
             .saturating_sub(1); // -1 should be ok but to ensure we don't underflow let's saturating_sub.
-        let line_start = self.line_starts[line];
+        let line_start = self.line_start_offsets[line];
         let char_offset = self.text[line_start..offset]
             .chars()
             .map(|chr| chr.len_utf16())
             .sum::<usize>();
-        (line_start, char_offset).into()
+        (line, char_offset).into()
     }
 
     /// Calculate the offset into the text of a `Position`
     pub fn to_offset(&self, position: Position) -> usize {
         let (line, offset) = position.into();
-        let start = self.line_starts[line];
-        let end = (start + 1).min(self.text.len());
+        // Are we past the end?
+        if line >= self.line_start_offsets.len() {
+            return self.text.len();
+        }
+        let start_offset = self.line_start_offsets[line];
+        let next_line = self
+            .line_start_offsets
+            .get(line + 1) // Next index unless that pushes us past the end.
+            .copied()
+            .unwrap_or(self.text.len()); // End of the text if we're on the last line.
+        let line_text = &self.text[start_offset..next_line];
+        let line_text = line_text
+            .strip_suffix('\n')
+            .map(|s| s.strip_suffix('\r').unwrap_or(s))
+            .unwrap_or(line_text);
         let mut rem = 0;
-        for (ind, chr) in self.text[start..end].char_indices() {
+        for (ind, chr) in line_text.char_indices() {
             if rem >= offset {
-                return start + ind;
+                return start_offset + ind;
             }
             rem += chr.len_utf16();
         }
-        end
+        start_offset + line_text.len()
     }
 
     fn process(&mut self) {
         self.get_line_starts();
-        let tokens = lexer::tokenize(&self.text);
+        let _tokens = lexer::tokenize(&self.text);
     }
 
     fn get_line_starts(&mut self) {
@@ -64,16 +82,27 @@ impl Document {
                 line_starts.push(index + 1);
             }
         }
-        self.line_starts = line_starts
+        self.line_start_offsets = line_starts
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+/// Start and length of an item in the document.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct Span {
     pub start: usize,
     pub length: usize,
 }
 
+impl From<(usize, usize)> for Span {
+    fn from(value: (usize, usize)) -> Self {
+        Self {
+            start: value.0,
+            length: value.1,
+        }
+    }
+}
+
+/// UTF-16 position.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Position {
     pub line_number: u32,

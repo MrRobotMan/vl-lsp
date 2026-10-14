@@ -84,19 +84,29 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        self.log_debug(format!("Changed {:?}", params.content_changes))
+        #[cfg(debug_assertions)]
+        {
+            self.log_debug(format!("Changed {:?}", params.content_changes))
+                .await;
+        }
+        let Some(mut doc) = self.documents.get_mut(&params.text_document.uri) else {
+            self.log_err(format!(
+                "{:?} changed without opening",
+                params.text_document.uri.path()
+            ))
             .await;
-        let mut doc = self
-            .documents
-            .get_mut(&params.text_document.uri)
-            .expect("Doc changed without opening");
+            return;
+        };
         if let Some(text) = params.content_changes.last() {
             doc.update(text.text.clone());
         }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        self.log_debug(format!("Saved: {params:?}")).await;
+        #[cfg(debug_assertions)]
+        {
+            self.log_debug(format!("Saved: {params:?}")).await;
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
