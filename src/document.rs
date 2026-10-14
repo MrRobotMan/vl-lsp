@@ -2,11 +2,14 @@ mod ast;
 mod lexer;
 mod parser;
 
+use lexer::{Token, tokenize};
+
 /// Contents of one document.
 #[derive(Debug, Clone, Default)]
 pub struct Document {
     text: String,
     line_start_offsets: Vec<usize>, // Byte positions of each line start
+    tokens: Vec<Token>,
 }
 
 impl Document {
@@ -70,9 +73,19 @@ impl Document {
         start_offset + line_text.len()
     }
 
+    /// Show the text within a span may panic if the slice is not valid.
+    pub fn text_of_unchecked(&self, span: Span) -> &str {
+        span.slice_unchecked(&self.text)
+    }
+
+    /// Show the text within a span.
+    pub fn text_of(&self, span: Span) -> Option<&str> {
+        span.try_slice(&self.text)
+    }
+
     fn process(&mut self) {
         self.get_line_starts();
-        let _tokens = lexer::tokenize(&self.text);
+        self.tokens = tokenize(&self.text);
     }
 
     fn get_line_starts(&mut self) {
@@ -101,9 +114,21 @@ impl Document {
 
 /// Start and length of an item in the document.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct Span {
+pub struct Span {
     pub start: usize,
     pub length: usize,
+}
+
+impl Span {
+    /// Extract a subsection of text. The span must fit entirely into the text.
+    pub fn slice_unchecked(self, text: &str) -> &str {
+        &text[self.start..self.start + self.length]
+    }
+
+    /// Extract a subsection of text less confidently. The span must fit entirely into the text.
+    pub fn try_slice(self, text: &str) -> Option<&str> {
+        text.get(self.start..self.start + self.length)
+    }
 }
 
 impl From<(usize, usize)> for Span {

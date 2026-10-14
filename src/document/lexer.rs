@@ -31,6 +31,19 @@ pub enum TokenKind {
     Error(ErrorKind),
 }
 
+impl TokenKind {
+    /// Trivial tokens: comments, newlines, whitespace
+    pub fn is_trivial(&self) -> bool {
+        [
+            Self::Comment,
+            Self::BlockComment,
+            Self::Newline,
+            Self::Whitespace,
+        ]
+        .contains(self)
+    }
+}
+
 impl From<&str> for TokenKind {
     fn from(value: &str) -> Self {
         let first = value.chars().next().unwrap_or(' '); // Space is ok for empty string. Using this to check for numbers.
