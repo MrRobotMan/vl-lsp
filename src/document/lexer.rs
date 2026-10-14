@@ -31,10 +31,10 @@ pub enum TokenKind {
     Error(ErrorKind),
 }
 
-impl From<String> for TokenKind {
-    fn from(value: String) -> Self {
+impl From<&str> for TokenKind {
+    fn from(value: &str) -> Self {
         let first = value.chars().next().unwrap_or(' '); // Space is ok for empty string. Using this to check for numbers.
-        match value.as_str() {
+        match value {
             "." => Self::Dot,
             _ if "-+1234567890".contains(first) => {
                 if value == "+" || value == "-" {
@@ -47,6 +47,10 @@ impl From<String> for TokenKind {
                     match ch {
                         '.' => {
                             dots += 1;
+                            // Decimal powers aren't permitted
+                            if exp == 1 {
+                                return Self::Error(ErrorKind::DecimalExponent);
+                            }
                             if dots > 1 {
                                 return Self::Symbol;
                             }
@@ -63,6 +67,17 @@ impl From<String> for TokenKind {
                         _ => {}
                     }
                 }
+                if let Some((before, _)) = value.split_once('.')
+                    && !before.chars().any(|c| c.is_ascii_digit())
+                {
+                    return Self::Symbol;
+                }
+                if let Some((before, after)) = value.to_lowercase().split_once('e')
+                    && !(before.chars().any(|c| c.is_ascii_digit())
+                        && after.chars().any(|c| c.is_ascii_digit()))
+                {
+                    return Self::Symbol;
+                }
                 if dots == 1 || exp == 1 {
                     Self::Real
                 } else {
@@ -76,6 +91,7 @@ impl From<String> for TokenKind {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
+    DecimalExponent,
     UnterminatedString,
     UnterminatedBlockComment,
 }
@@ -96,7 +112,7 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 None => break,
                 Some('\r') | Some('\n') => self.newline(&mut tokens),
-                Some(' ') => self.whitespace(&mut tokens),
+                Some(' ') | Some('\t') => self.whitespace(&mut tokens),
                 Some('(') | Some(')') | Some('\'') => self.atom(&mut tokens),
                 Some('"') => self.string(&mut tokens),
                 Some(';') => self.comment(&mut tokens),
@@ -125,7 +141,7 @@ impl<'a> Lexer<'a> {
     fn newline(&mut self, tokens: &mut Vec<Token>) {
         let (start, chr) = self.next();
         if chr == '\r' && self.peek() == Some('\n') {
-            // CLRF ending
+            // CRLF ending
             let _ = self.next();
         }
         let end = self.next_start();
@@ -166,6 +182,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn block_comment(&mut self, start: usize, tokens: &mut Vec<Token>) {
+        let _start_pipe = self.next(); // Pipe from ;| opening.
         loop {
             match self.peek() {
                 Some('|') => {
@@ -239,14 +256,13 @@ impl<'a> Lexer<'a> {
             Some(')'),
             None,
         ];
-        let mut word = String::new();
-        let (start, chr) = self.next();
-        word.push(chr);
+        let (start, _) = self.next();
         while !delimiters.contains(&self.peek()) {
-            word.push(self.next().1);
+            let _ = self.next();
         }
-        let span = (start, self.next_start() - start).into();
-        let kind = word.into();
+        let end = self.next_start();
+        let span = (start, end - start).into();
+        let kind = self.source[start..end].into();
         tokens.push(Token { span, kind });
     }
 
@@ -259,7 +275,10 @@ impl<'a> Lexer<'a> {
             Some(v) => v,
             None => {
                 error!("Tried calling next without peeking first.");
-                (self.source.len(), self.source.chars().last().unwrap())
+                (
+                    self.source.len(),
+                    self.source.chars().last().unwrap_or('\n'),
+                )
             }
         }
     }
@@ -284,13 +303,20 @@ mod tests {
     fn test_empty_input() {
         assert!(tokenize("").is_empty());
     }
+
     #[test]
     fn test_whitespace_only() {
         assert_eq!(kinds(" \t\r\n "), [Whitespace, Newline, Whitespace]);
     }
+
     #[test]
     fn test_parens() {
         assert_eq!(kinds("()"), [OpenParen, CloseParen]);
+    }
+
+    #[test]
+    fn test_carriage_return_only() {
+        assert_eq!(kinds("a\rb"), [Symbol, Newline, Symbol]);
     }
 
     #[test]
@@ -318,6 +344,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_leading_tab() {
+        assert_eq!(kinds("\ta"), [Whitespace, Symbol])
+    }
+
+    #[test]
+    fn test_leading_space() {
+        assert_eq!(kinds(" a"), [Whitespace, Symbol])
+    }
+
     // --- numbers ---
     #[test]
     fn test_integer() {
@@ -342,6 +378,11 @@ mod tests {
     #[test]
     fn test_real_exponent() {
         assert_eq!(kinds("1.5e-3"), [Real]);
+    }
+
+    #[test]
+    fn test_no_numbers_after_decimal() {
+        assert_eq!(kinds("3."), [Real])
     }
 
     #[test]
@@ -413,6 +454,36 @@ mod tests {
     #[test]
     fn test_symbol_start_with_number() {
         assert_eq!(kinds("3dc"), [Symbol]);
+    }
+
+    #[test]
+    fn test_no_digits() {
+        assert_eq!(kinds("-."), [Symbol])
+    }
+
+    #[test]
+    fn test_no_mantissa() {
+        assert_eq!(kinds("+e12"), [Symbol])
+    }
+
+    #[test]
+    fn test_no_mantissa_or_exponent() {
+        assert_eq!(kinds("-e"), [Symbol])
+    }
+
+    #[test]
+    fn test_no_exponent() {
+        assert_eq!(kinds("6e"), [Symbol])
+    }
+
+    #[test]
+    fn test_no_exponent_with_sign() {
+        assert_eq!(kinds("6e+"), [Symbol])
+    }
+
+    #[test]
+    fn test_no_decimal_exponent() {
+        assert_eq!(kinds("6e1.5"), [Error(DecimalExponent)])
     }
 
     // --- strings ---
@@ -522,6 +593,11 @@ mod tests {
     #[test]
     fn test_block_comment_hides_pipe() {
         assert_eq!(kinds(";| | ; |;"), [BlockComment]);
+    }
+
+    #[test]
+    fn test_short_unterminated_block_comment() {
+        assert_eq!(kinds(";|;"), [Error(UnterminatedBlockComment)]);
     }
 
     #[test]

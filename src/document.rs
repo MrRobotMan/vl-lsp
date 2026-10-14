@@ -77,10 +77,23 @@ impl Document {
 
     fn get_line_starts(&mut self) {
         let mut line_starts = vec![0];
+        let mut r_as_newline = false;
         for (index, chr) in self.text.char_indices() {
             if chr == '\n' {
                 line_starts.push(index + 1);
+                r_as_newline = false;
             }
+            if r_as_newline {
+                line_starts.push(index); // Passed \r but didn't get a \n (mac old style)
+                r_as_newline = false;
+            }
+            if chr == '\r' {
+                r_as_newline = true;
+            }
+        }
+        // \r is the last character.
+        if r_as_newline {
+            self.line_start_offsets.push(self.text.len());
         }
         self.line_start_offsets = line_starts
     }
