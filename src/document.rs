@@ -58,11 +58,14 @@ impl Document {
             .get(line + 1) // Next index unless that pushes us past the end.
             .copied()
             .unwrap_or(self.text.len()); // End of the text if we're on the last line.
-        let line_text = &self.text[start_offset..next_line];
-        let line_text = line_text
-            .strip_suffix('\n')
-            .map(|s| s.strip_suffix('\r').unwrap_or(s))
-            .unwrap_or(line_text);
+        let mut line_text = &self.text[start_offset..next_line];
+        line_text = if line_text.ends_with('\r') {
+            line_text.strip_suffix('\r').unwrap()
+        } else if line_text.ends_with("\r\n") {
+            line_text.strip_suffix("\r\n").unwrap()
+        } else {
+            line_text.strip_suffix('\n').unwrap_or(line_text)
+        };
         let mut rem = 0;
         for (ind, chr) in line_text.char_indices() {
             if rem >= offset {
@@ -106,7 +109,7 @@ impl Document {
         }
         // \r is the last character.
         if r_as_newline {
-            self.line_start_offsets.push(self.text.len());
+            line_starts.push(self.text.len());
         }
         self.line_start_offsets = line_starts
     }
@@ -166,3 +169,67 @@ const SPECIAL_FORMS: [&str; 18] = [
     "AND", "COMMAND", "COND", "DEFUN", "DEFUN-Q", "FOREACH", "FUNCTION", "IF", "LAMBDA", "OR",
     "PROGN", "QUOTE", "REPEAT", "SETQ", "TRACE", "UNTRACE", "VLAX-FOR", "WHILE",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_line_feed_endings() {
+        let doc = Document::new("a\nbc\n\nd\n".into());
+        assert_eq!(&doc.line_start_offsets, &[0, 2, 5, 6, 8]);
+        assert_eq!(
+            doc.to_position(6),
+            Position {
+                line_number: 3,
+                char_offset: 0
+            }
+        );
+        assert_eq!(
+            doc.to_offset(Position {
+                line_number: 1,
+                char_offset: 1
+            }),
+            3
+        );
+    }
+
+    #[test]
+    fn test_carriage_return_endings() {
+        let doc = Document::new("a\rbc\r\rd\r".into());
+        assert_eq!(&doc.line_start_offsets, &[0, 2, 5, 6, 8]);
+        assert_eq!(
+            doc.to_position(6),
+            Position {
+                line_number: 3,
+                char_offset: 0
+            }
+        );
+        assert_eq!(
+            doc.to_offset(Position {
+                line_number: 1,
+                char_offset: 1
+            }),
+            3
+        );
+    }
+    #[test]
+    fn test_crlf_endings() {
+        let doc = Document::new("a\r\nbc\r\n\r\nd\r\n".into());
+        assert_eq!(doc.line_start_offsets, &[0, 3, 7, 9, 12]);
+        assert_eq!(
+            doc.to_position(9),
+            Position {
+                line_number: 3,
+                char_offset: 0
+            }
+        );
+        assert_eq!(
+            doc.to_offset(Position {
+                line_number: 1,
+                char_offset: 1
+            }),
+            4
+        );
+    }
+}
