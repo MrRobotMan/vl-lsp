@@ -178,58 +178,38 @@ mod tests {
     fn test_line_feed_endings() {
         let doc = Document::new("a\nbc\n\nd\n".into());
         assert_eq!(&doc.line_start_offsets, &[0, 2, 5, 6, 8]);
-        assert_eq!(
-            doc.to_position(6),
-            Position {
-                line_number: 3,
-                char_offset: 0
-            }
-        );
-        assert_eq!(
-            doc.to_offset(Position {
-                line_number: 1,
-                char_offset: 1
-            }),
-            3
-        );
+        assert_eq!(doc.to_position(6), (3, 0).into());
+        assert_eq!(doc.to_offset((1, 1).into()), 3);
     }
 
     #[test]
     fn test_carriage_return_endings() {
         let doc = Document::new("a\rbc\r\rd\r".into());
         assert_eq!(&doc.line_start_offsets, &[0, 2, 5, 6, 8]);
-        assert_eq!(
-            doc.to_position(6),
-            Position {
-                line_number: 3,
-                char_offset: 0
-            }
-        );
-        assert_eq!(
-            doc.to_offset(Position {
-                line_number: 1,
-                char_offset: 1
-            }),
-            3
-        );
+        assert_eq!(doc.to_position(6), (3, 0).into());
+        assert_eq!(doc.to_offset((1, 1).into()), 3);
     }
+
     #[test]
     fn test_crlf_endings() {
         let doc = Document::new("a\r\nbc\r\n\r\nd\r\n".into());
         assert_eq!(doc.line_start_offsets, &[0, 3, 7, 9, 12]);
-        assert_eq!(
-            doc.to_position(9),
-            Position {
-                line_number: 3,
-                char_offset: 0
-            }
-        );
-        assert_eq!(
-            doc.to_offset(Position {
-                line_number: 1,
-                char_offset: 1
-            }),
-            4
-        );
+        assert_eq!(doc.to_position(9), (3, 0).into());
+        assert_eq!(doc.to_offset((1, 1).into()), 4);
+    }
+
+    #[test]
+    fn test_lf_past_line_end() {
+        assert_eq!(Document::new("a\nb".into()).to_offset((0, 2).into()), 1)
+    }
+
+    #[test]
+    fn test_cr_past_line_end() {
+        assert_eq!(Document::new("a\rb".into()).to_offset((0, 2).into()), 1)
+    }
+
+    #[test]
+    fn test_crlf_past_line_end() {
+        assert_eq!(Document::new("a\r\nb".into()).to_offset((0, 2).into()), 1)
     }
 }
