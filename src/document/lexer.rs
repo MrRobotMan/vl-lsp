@@ -10,17 +10,8 @@ pub fn tokenize(source: &str) -> Vec<Token> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Token {
-    span: Span,
-    kind: TokenKind,
-}
-
-impl Token {
-    pub fn span(&self) -> Span {
-        self.span
-    }
-    pub fn kind(&self) -> TokenKind {
-        self.kind
-    }
+    pub(crate) span: Span,
+    pub(crate) kind: TokenKind,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -38,19 +29,6 @@ pub enum TokenKind {
     Newline,
     Whitespace,
     Error(ErrorKind),
-}
-
-impl TokenKind {
-    /// Trivial tokens: comments, newlines, whitespace
-    pub fn is_trivial(&self) -> bool {
-        [
-            Self::Comment,
-            Self::BlockComment,
-            Self::Newline,
-            Self::Whitespace,
-        ]
-        .contains(self)
-    }
 }
 
 impl From<&str> for TokenKind {
