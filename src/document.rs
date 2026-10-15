@@ -2,6 +2,8 @@ mod ast;
 mod lexer;
 mod parser;
 
+use std::ops::Range;
+
 use lexer::{Token, tokenize};
 
 /// Contents of one document.
@@ -116,29 +118,30 @@ impl Document {
 }
 
 /// Start and length of an item in the document.
+/// Holds a half open range
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
-    pub length: usize,
+    pub end: usize,
 }
 
 impl Span {
     /// Extract a subsection of text. The span must fit entirely into the text.
     pub fn slice(self, text: &str) -> &str {
-        &text[self.start..self.start + self.length]
+        &text[self.start..self.end]
     }
 
     /// Extract a subsection of text less confidently. The span must fit entirely into the text.
     pub fn try_slice(self, text: &str) -> Option<&str> {
-        text.get(self.start..self.start + self.length)
+        text.get(self.start..self.end)
     }
 }
 
-impl From<(usize, usize)> for Span {
-    fn from(value: (usize, usize)) -> Self {
+impl From<Range<usize>> for Span {
+    fn from(value: Range<usize>) -> Self {
         Self {
-            start: value.0,
-            length: value.1,
+            start: value.start,
+            end: value.end,
         }
     }
 }

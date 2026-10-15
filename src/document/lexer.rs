@@ -146,7 +146,7 @@ impl<'a> Lexer<'a> {
     fn atom(&mut self, tokens: &mut Vec<Token>) {
         let (index, atom) = self.next();
         let step = self.next_start();
-        let span = (index, step - index).into();
+        let span = (index..step).into();
         let kind = match atom {
             '(' => TokenKind::OpenParen,
             ')' => TokenKind::CloseParen,
@@ -166,7 +166,7 @@ impl<'a> Lexer<'a> {
             let _ = self.next();
         }
         let end = self.next_start();
-        let span = (start, end - start).into();
+        let span = (start..end).into();
         let kind = TokenKind::Newline;
         tokens.push(Token { span, kind });
     }
@@ -178,7 +178,7 @@ impl<'a> Lexer<'a> {
         }
         let end = self.next_start();
         tokens.push(Token {
-            span: (start, end - start).into(),
+            span: (start..end).into(),
             kind: TokenKind::Whitespace,
         });
     }
@@ -197,7 +197,7 @@ impl<'a> Lexer<'a> {
         }
         let end = self.next_start();
         tokens.push(Token {
-            span: (start, end - start).into(),
+            span: (start..end).into(),
             kind: TokenKind::Comment,
         });
     }
@@ -212,16 +212,15 @@ impl<'a> Lexer<'a> {
                     if let Some(';') = self.peek() {
                         let _semicolon = self.next();
                         let end = self.next_start();
-                        tokens.push(Token {
-                            span: (start, end - start).into(),
-                            kind: TokenKind::BlockComment,
-                        });
+                        let span = (start..end).into();
+                        let kind = TokenKind::BlockComment;
+                        tokens.push(Token { span, kind });
                         return;
                     }
                 }
                 None => {
                     let end = self.next_start();
-                    let span = (start, end - start).into();
+                    let span = (start..end).into();
                     let kind = TokenKind::Error(ErrorKind::UnterminatedBlockComment);
                     tokens.push(Token { span, kind });
                     return;
@@ -239,7 +238,7 @@ impl<'a> Lexer<'a> {
         loop {
             match self.peek() {
                 None => {
-                    let span = (start, self.next_start() - start).into();
+                    let span = (start..self.next_start()).into();
                     let kind = TokenKind::Error(ErrorKind::UnterminatedString);
                     tokens.push(Token { span, kind });
                     return;
@@ -247,7 +246,7 @@ impl<'a> Lexer<'a> {
                 Some('"') if !escape_next => {
                     let _close_quote = self.next();
                     let end = self.next_start();
-                    let span = (start, end - start).into();
+                    let span = (start..end).into();
                     let kind = TokenKind::String;
                     tokens.push(Token { span, kind });
                     return;
@@ -282,7 +281,7 @@ impl<'a> Lexer<'a> {
             let _ = self.next();
         }
         let end = self.next_start();
-        let span = (start, end - start).into();
+        let span = (start..end).into();
         let kind = self.source[start..end].into();
         tokens.push(Token { span, kind });
     }
@@ -554,7 +553,7 @@ mod tests {
         assert_eq!(
             tokenize("\"abc"),
             [Token {
-                span: (0, 4).into(),
+                span: (0..4).into(),
                 kind: Error(UnterminatedString)
             }]
         );
@@ -632,7 +631,7 @@ mod tests {
         assert_eq!(
             tokenize(";| oops"),
             [Token {
-                span: (0, 7).into(),
+                span: (0..7).into(),
                 kind: Error(UnterminatedBlockComment)
             }]
         );
@@ -645,15 +644,15 @@ mod tests {
             tokenize("(ab)"),
             [
                 Token {
-                    span: (0, 1).into(),
+                    span: (0..1).into(),
                     kind: OpenParen
                 },
                 Token {
-                    span: (1, 2).into(),
+                    span: (1..3).into(),
                     kind: Symbol
                 },
                 Token {
-                    span: (3, 1).into(),
+                    span: (3..4).into(),
                     kind: CloseParen
                 },
             ]
@@ -663,27 +662,24 @@ mod tests {
     #[test]
     fn test_spans_with_whitespace() {
         let t = tokenize("a   b");
-        assert_eq!((t[2].span.start, t[2].span.length), (4, 1));
+        assert_eq!((t[2].span.start, t[2].span.end), (4, 5));
     }
 
     #[test]
     fn test_spans_multibyte_utf8() {
         // 'é' is 2 bytes, so the string token is 4 bytes and 'x' starts at byte 5
         let t = tokenize("\"é\" x");
-        assert_eq!(t[0].span, (0, 4).into());
-        assert_eq!(t[1].span, (4, 1).into());
-        assert_eq!(t[2].span, (5, 1).into());
+        assert_eq!(t[0].span, (0..4).into());
+        assert_eq!(t[1].span, (4..5).into());
+        assert_eq!(t[2].span, (5..6).into());
     }
 
     #[test]
     fn test_spans_ordered_and_in_bounds() {
         let src = "(defun c:f (/ a) ; c\n (setq a 1.5 s \"x\"))";
-        let mut end = 0;
         let tokens = tokenize(src);
         for t in tokens {
-            assert!(t.span.start >= end);
-            end = t.span.start + t.span.length;
-            assert!(end <= src.len());
+            assert!(t.span.end <= src.len());
         }
     }
 
