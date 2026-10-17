@@ -70,13 +70,18 @@ impl<'a> AstBuilder<'a> {
         let mut items = Vec::new();
         while let Some(token) = self.peek() {
             match token.kind {
-                TokenKind::CloseParen => self.errors.push(ParseError::new(
-                    token.span,
-                    ParseErrorKind::UnmatchedCloseParen,
-                )),
-                TokenKind::Dot => self
-                    .errors
-                    .push(ParseError::new(token.span, ParseErrorKind::MisplacedDot)),
+                TokenKind::CloseParen => {
+                    self.errors.push(ParseError::new(
+                        token.span,
+                        ParseErrorKind::UnmatchedCloseParen,
+                    ));
+                    self.advance();
+                }
+                TokenKind::Dot => {
+                    self.errors
+                        .push(ParseError::new(token.span, ParseErrorKind::MisplacedDot));
+                    self.advance();
+                }
                 TokenKind::Comment
                 | TokenKind::BlockComment
                 | TokenKind::Newline
@@ -145,13 +150,18 @@ impl<'a> AstBuilder<'a> {
                 self.advance();
                 Node::new(span, NodeKind::Dot)
             }
-            TokenKind::CloseParen
-            | TokenKind::Comment
+            TokenKind::Comment
             | TokenKind::BlockComment
             | TokenKind::Newline
             | TokenKind::Whitespace
             | TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
-                unreachable!("Skipped in `parse`")
+                self.advance();
+                self.parse_form(in_list)
+            }
+            TokenKind::CloseParen => {
+                tracing::error!("Skipped in `parse` - {kind:?}");
+                self.advance();
+                self.parse_form(in_list)
             }
         }
     }
