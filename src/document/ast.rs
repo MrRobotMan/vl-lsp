@@ -88,10 +88,13 @@ impl<'a> AstBuilder<'a> {
                 | TokenKind::Whitespace => {
                     self.advance();
                 }
-
-                TokenKind::Error(ErrorKind::UnterminatedBlockComment) => self.errors.push(
-                    ParseError::new(token.span, ParseErrorKind::UnterminatedBlockComment),
-                ),
+                TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
+                    self.errors.push(ParseError::new(
+                        token.span,
+                        ParseErrorKind::UnterminatedBlockComment,
+                    ));
+                    self.advance();
+                }
                 _ => items.push(self.parse_form(false)),
             }
         }
@@ -106,7 +109,11 @@ impl<'a> AstBuilder<'a> {
 
     fn parse_form(&mut self, in_list: bool) -> Node {
         // Unwrap is ok here. The token has been checked for existence before calling parse_form.
-        let Token { span, kind } = self.peek().unwrap();
+        let Some(Token { span, kind }) = self.peek() else {
+            // Remove later. Shouldn't get a None here.
+            let l = self.source.len();
+            return Node::new((l..l).into(), NodeKind::Eof);
+        };
         let span = *span;
         match kind {
             TokenKind::OpenParen => self.parse_list(),
@@ -136,7 +143,7 @@ impl<'a> AstBuilder<'a> {
             }
             TokenKind::Symbol => {
                 self.advance();
-                let text = span.slice(self.source).to_lowercase();
+                let text = span.slice(self.source);
                 let kind = if text.eq_ignore_ascii_case("nil") {
                     NodeKind::Nil
                 } else if text.eq_ignore_ascii_case("t") {
@@ -154,12 +161,9 @@ impl<'a> AstBuilder<'a> {
             | TokenKind::BlockComment
             | TokenKind::Newline
             | TokenKind::Whitespace
-            | TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
-                self.advance();
-                self.parse_form(in_list)
-            }
-            TokenKind::CloseParen => {
-                tracing::error!("Skipped in `parse` - {kind:?}");
+            | TokenKind::Error(ErrorKind::UnterminatedBlockComment)
+            | TokenKind::CloseParen => {
+                tracing::error!("Sould not encounter {kind:?} here.");
                 self.advance();
                 self.parse_form(in_list)
             }
@@ -174,9 +178,8 @@ impl<'a> AstBuilder<'a> {
         while let Some(token) = self.peek() {
             match token.kind {
                 TokenKind::CloseParen => {
-                    end = token.span.end;
                     closed = true;
-                    self.advance();
+                    end = self.advance().span.end;
                     break;
                 }
                 _ if self.at_recover_point() => break,
@@ -312,6 +315,7 @@ enum NodeKind {
     Nil,
     Quote(Box<Node>),
     Missing,
+    Eof,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
