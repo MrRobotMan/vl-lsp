@@ -12,7 +12,7 @@ pub fn parse<'a>(tokens: &'a [Token], source: &'a str) -> Ast {
 
 struct AstBuilder<'a> {
     source: &'a str,
-    tokens: &'a [Token],
+    tokens: Vec<&'a Token>,
     position: usize,
     previous_end: usize,
     errors: Vec<ParseError>,
@@ -20,16 +20,30 @@ struct AstBuilder<'a> {
 
 impl<'a> AstBuilder<'a> {
     fn new(tokens: &'a [Token], source: &'a str) -> Self {
+        let mut toks = Vec::new();
+        let mut errors = Vec::new();
+        for token in tokens {
+            match token.kind {
+                t if t.is_trivial() => {}
+                TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
+                    errors.push(ParseError::new(
+                        token.span,
+                        ParseErrorKind::UnterminatedBlockComment,
+                    ));
+                }
+                _ => toks.push(token),
+            }
+        }
         Self {
             source,
-            tokens,
+            tokens: toks,
             position: 0,
             previous_end: 0,
-            errors: Vec::new(),
+            errors,
         }
     }
 
-    fn peek(&self) -> Option<&Token> {
+    fn peek(&self) -> Option<&&Token> {
         self.tokens.get(self.position)
     }
 
@@ -44,7 +58,9 @@ impl<'a> AstBuilder<'a> {
     /// Check if the current position is an open paren at the start of a line or
     /// following a CR or LF character and the next token is a defun symbol.
     fn at_recover_point(&self) -> bool {
-        if let Some(Token {
+        if self.peek().is_none() {
+            true
+        } else if let Some(Token {
             span: cur_span,
             kind: TokenKind::OpenParen,
         }) = self.peek()
@@ -54,11 +70,8 @@ impl<'a> AstBuilder<'a> {
                 span: next_span,
                 kind: TokenKind::Symbol,
             }) = self.tokens.get(self.position + 1)
-            && ["defun", "defun-q", "defun-q-list-ref", "defun-q-list-set"].contains(
-                &self.source[next_span.start..next_span.end]
-                    .to_lowercase()
-                    .as_str(),
-            )
+            && ["defun", "defun-q", "defun-q-list-ref", "defun-q-list-set"]
+                .contains(&next_span.slice(self.source).to_lowercase().as_str())
         {
             true
         } else {
@@ -78,21 +91,18 @@ impl<'a> AstBuilder<'a> {
                     self.advance();
                 }
                 TokenKind::Dot => {
+                    let span = token.span;
                     self.errors
-                        .push(ParseError::new(token.span, ParseErrorKind::MisplacedDot));
+                        .push(ParseError::new(span, ParseErrorKind::MisplacedDot));
+                    items.push(Node::new(span, NodeKind::Dot));
                     self.advance();
                 }
-                TokenKind::Comment
-                | TokenKind::BlockComment
-                | TokenKind::Newline
-                | TokenKind::Whitespace => {
+                t if t.is_trivial() => {
+                    tracing::error!("Somehow got a filtered token. {:?}", token.kind);
                     self.advance();
                 }
                 TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
-                    self.errors.push(ParseError::new(
-                        token.span,
-                        ParseErrorKind::UnterminatedBlockComment,
-                    ));
+                    tracing::error!("Somehow got a filtered token. {:?}", token.kind);
                     self.advance();
                 }
                 _ => items.push(self.parse_form(false)),
@@ -109,11 +119,7 @@ impl<'a> AstBuilder<'a> {
 
     fn parse_form(&mut self, in_list: bool) -> Node {
         // Unwrap is ok here. The token has been checked for existence before calling parse_form.
-        let Some(Token { span, kind }) = self.peek() else {
-            // Remove later. Shouldn't get a None here.
-            let l = self.source.len();
-            return Node::new((l..l).into(), NodeKind::Eof);
-        };
+        let Token { span, kind } = self.peek().unwrap();
         let span = *span;
         match kind {
             TokenKind::OpenParen => self.parse_list(),
@@ -163,7 +169,7 @@ impl<'a> AstBuilder<'a> {
             | TokenKind::Whitespace
             | TokenKind::Error(ErrorKind::UnterminatedBlockComment)
             | TokenKind::CloseParen => {
-                tracing::error!("Sould not encounter {kind:?} here.");
+                tracing::error!("Somehow got a filtered token. {kind:?}");
                 self.advance();
                 self.parse_form(in_list)
             }
@@ -177,12 +183,22 @@ impl<'a> AstBuilder<'a> {
         let mut end = self.previous_end;
         while let Some(token) = self.peek() {
             match token.kind {
+                t if t.is_trivial() => {
+                    tracing::error!("Somehow got a filtered token. {:?}", token.kind);
+                    self.advance();
+                }
+                TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
+                    tracing::error!("Somehow got a filtered token. {:?}", token.kind);
+                    self.advance();
+                }
                 TokenKind::CloseParen => {
                     closed = true;
                     end = self.advance().span.end;
                     break;
                 }
-                _ if self.at_recover_point() => break,
+                _ if self.at_recover_point() => {
+                    break;
+                }
                 _ => list.push(self.parse_form(true)),
             }
         }
@@ -222,7 +238,7 @@ impl<'a> AstBuilder<'a> {
             self.errors.push(ParseError::new(
                 Span {
                     start: extras[0].span.start,
-                    end: extras[list.len() - 1].span.end,
+                    end: extras[extras.len() - 1].span.end,
                 },
                 ParseErrorKind::ExtraCdrsInDottedPair,
             ))
@@ -237,7 +253,8 @@ impl<'a> AstBuilder<'a> {
                 kind: TokenKind::CloseParen,
                 ..
             }) => true,
-            _ => in_list && self.at_recover_point(),
+            _ if (in_list && self.at_recover_point()) => true,
+            _ => false,
         };
         let child = if missing {
             self.errors.push(ParseError::new(
@@ -315,7 +332,6 @@ enum NodeKind {
     Nil,
     Quote(Box<Node>),
     Missing,
-    Eof,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

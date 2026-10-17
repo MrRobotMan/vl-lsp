@@ -157,9 +157,9 @@ fn label(node: &Node) -> Vec<(&'static str, usize, usize)> {
         NodeKind::String => vec![("str", node.span.start, node.span.end)],
         NodeKind::True => vec![("t", node.span.start, node.span.end)],
         NodeKind::Nil => vec![("nil", node.span.start, node.span.end)],
-        NodeKind::Quote(node) => {
+        NodeKind::Quote(child) => {
             let mut v = vec![("quote", node.span.start, node.span.end)];
-            v.extend(label(node.as_ref()));
+            v.extend(label(child.as_ref()));
             v
         }
         NodeKind::Missing => vec![("missing", node.span.start, node.span.end)],
@@ -170,8 +170,61 @@ fn label(node: &Node) -> Vec<(&'static str, usize, usize)> {
 ///   - the span lies inside source bounds
 ///   - every child span is inside its parent's span
 ///   - sibling spans are ordered and non-overlapping
-fn assert_well_nested(_src: &str) {
-    todo!("recurse with (parent_span); compare start/end of each child; track previous sibling end")
+fn assert_well_nested(src: &str) {
+    let tokens = tokenize(src);
+    let ast = parse(&tokens, src);
+    let mut prev_end = None;
+    assert_eq!(
+        ast.root.span,
+        (0..src.len()).into(),
+        "Root span is not total"
+    );
+    if let Node {
+        span: s,
+        kind: NodeKind::Root(children),
+    } = ast.root
+    {
+        for child in &children {
+            prev_end = assert_nested_node(child, s, prev_end);
+        }
+    } else {
+        panic!("Root node is {} not TokenKind::Root", label(&ast.root)[0].0);
+    }
+}
+
+fn assert_nested_node(
+    node: &Node,
+    parent_span: Span,
+    mut prev_end: Option<usize>,
+) -> Option<usize> {
+    assert!(
+        node.span.start >= parent_span.start,
+        "Node ({:?}) starts before parent {parent_span:?}.",
+        label(node)[0]
+    );
+    assert!(
+        node.span.end <= parent_span.end,
+        "Node ({:?}) ends after parent {parent_span:?}.",
+        label(node)[0]
+    );
+    if let Some(prev) = prev_end {
+        assert!(
+            node.span.start >= prev,
+            "Node {:?} starts before sibling ends {parent_span:?}.",
+            node.span
+        );
+    };
+    match &node.kind {
+        NodeKind::Root(v) | NodeKind::List(v) => {
+            prev_end = None;
+            for child in v {
+                prev_end = assert_nested_node(child, node.span, prev_end);
+            }
+            prev_end
+        }
+        NodeKind::Quote(n) => assert_nested_node(n, node.span, None),
+        _ => Some(node.span.end),
+    }
 }
 
 // ---------------------------------------------------------------
