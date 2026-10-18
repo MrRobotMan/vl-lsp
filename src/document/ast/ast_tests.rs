@@ -54,7 +54,7 @@ type Err = (ParseErrorKind, usize, usize); // (kind, start, end)
 
 fn check(src: &str, expected_tree: &str, expected_errors: &[Err]) {
     let tokens = tokenize(src);
-    let ast = parse(&tokens, src);
+    let ast = parse(tokens, src);
     assert_eq!(shape(&ast, src), expected_tree, "tree for {src:?}");
     let mut errs: Vec<Err> = ast
         .errors
@@ -83,6 +83,7 @@ fn ok(src: &str, expected_tree: &str) {
 ///   Nil       -> "nil"   (canonical, whatever the source capitalization)
 ///   True      -> "t"     (canonical, whatever the source capitalization)
 ///   Missing   -> "?"     (zero-width placeholder after a lone quote)
+///   Skipped   -> "{ SKIPPED }"
 fn shape(ast: &Ast, src: &str) -> String {
     show(&ast.root, src)
 }
@@ -110,6 +111,7 @@ fn show(node: &Node, src: &str) -> String {
         NodeKind::True => s.push('t'),
         NodeKind::Nil => s.push_str("nil"),
         NodeKind::Missing => s.push('?'),
+        NodeKind::Skipped => s.push_str("{ SKIPPED }"),
     };
     if let Some(suffix) = suffix {
         s.push(suffix);
@@ -134,7 +136,7 @@ impl NodeKind {
 /// "missing". Dot is an ordinary child of its List.
 fn outline(src: &str) -> Vec<(&'static str, usize, usize)> {
     let tokens = tokenize(src);
-    let ast = parse(&tokens, src);
+    let ast = parse(tokens, src);
     label(&ast.root)
 }
 
@@ -163,6 +165,7 @@ fn label(node: &Node) -> Vec<(&'static str, usize, usize)> {
             v
         }
         NodeKind::Missing => vec![("missing", node.span.start, node.span.end)],
+        NodeKind::Skipped => vec![("skipped", node.span.start, node.span.end)],
     }
 }
 
@@ -172,7 +175,7 @@ fn label(node: &Node) -> Vec<(&'static str, usize, usize)> {
 ///   - sibling spans are ordered and non-overlapping
 fn assert_well_nested(src: &str) {
     let tokens = tokenize(src);
-    let ast = parse(&tokens, src);
+    let ast = parse(tokens, src);
     let mut prev_end = None;
     assert_eq!(
         ast.root.span,
@@ -761,6 +764,293 @@ fn test_quote_of_quote_missing_operand() {
 }
 
 // ---------------------------------------------------------------
+// recursion
+// ---------------------------------------------------------------
+
+fn opens(n: usize) -> String {
+    "(".repeat(n)
+}
+
+fn closes(n: usize) -> String {
+    ")".repeat(n)
+}
+
+fn quotes(n: usize) -> String {
+    "'".repeat(n)
+}
+
+fn count_errors(src: &str, kind: ParseErrorKind) -> usize {
+    let tokens = tokenize(src);
+    parse(tokens, src)
+        .errors
+        .iter()
+        .filter(|e| e.kind == kind)
+        .count()
+}
+
+fn total_errors(src: &str) -> usize {
+    let tokens = tokenize(src);
+    parse(tokens, src).errors.len()
+}
+
+#[test]
+fn test_max_depth_is_what_these_tests_expect() {
+    assert_eq!(MAX_DEPTH, 256);
+}
+
+#[test]
+fn test_lists_at_exactly_max_depth_parse_cleanly() {
+    let src = format!("{}{}", opens(MAX_DEPTH), closes(MAX_DEPTH));
+    ok(&src, &format!("<{src}>"));
+}
+
+#[test]
+fn test_lists_one_past_max_depth_skip_the_innermost() {
+    let src = format!("{}{}", opens(MAX_DEPTH + 1), closes(MAX_DEPTH + 1));
+    check(
+        &src,
+        &format!("<{}{{ SKIPPED }}{}>", opens(MAX_DEPTH), closes(MAX_DEPTH)),
+        &[(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)],
+    );
+}
+
+#[test]
+fn test_skipped_node_covers_the_whole_too_deep_form() {
+    // The innermost `(x)` is the 257th list. It must be one Skipped node.
+    let src = format!("{}x{}", opens(MAX_DEPTH + 1), closes(MAX_DEPTH + 1));
+    let skipped: Vec<_> = outline(&src)
+        .into_iter()
+        .filter(|(label, _, _)| *label == "skipped")
+        .collect();
+    assert_eq!(skipped, [("skipped", MAX_DEPTH, MAX_DEPTH + 3)]);
+    assert_eq!(count_errors(&src, TooDeepRecursion), 1);
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_skipped_node_covers_nested_content_below_the_limit() {
+    // 5 extra levels past the limit. They all belong to the one skipped form.
+    let total = MAX_DEPTH + 5;
+    let src = format!("{}{}", opens(total), closes(total));
+    let skipped: Vec<_> = outline(&src)
+        .into_iter()
+        .filter(|(label, _, _)| *label == "skipped")
+        .collect();
+    // Starts at the 257th `(`, ends after its matching `)`.
+    assert_eq!(skipped, [("skipped", MAX_DEPTH, 2 * total - MAX_DEPTH)]);
+    assert_eq!(total_errors(&src), 1);
+}
+
+#[test]
+fn test_form_after_a_too_deep_form_is_still_parsed() {
+    // Skip-to-end-of-input would lose `(y)`.
+    let total = MAX_DEPTH + 5;
+    let src = format!("{}{} (y)\n", opens(total), closes(total));
+    check(
+        &src,
+        &format!(
+            "<{}{{ SKIPPED }}{} (y)>",
+            opens(MAX_DEPTH),
+            closes(MAX_DEPTH)
+        ),
+        &[(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)],
+    );
+}
+
+#[test]
+fn test_siblings_after_a_too_deep_child_are_kept() {
+    // The 256th list holds `a`, a too-deep child, then `b`.
+    let src = format!(
+        "{}(a ((x)) b){}",
+        opens(MAX_DEPTH - 1),
+        closes(MAX_DEPTH - 1)
+    );
+    let at = MAX_DEPTH - 1 + 3; // start of `((x))`
+    check(
+        &src,
+        &format!(
+            "<{}(a {{ SKIPPED }} b){}>",
+            opens(MAX_DEPTH - 1),
+            closes(MAX_DEPTH - 1)
+        ),
+        &[(TooDeepRecursion, at, at + 1)],
+    );
+}
+
+#[test]
+fn test_depth_is_released_after_each_form() {
+    // Three separate forms, each exactly at the limit. If depth were never
+    // decremented the second would fail.
+    let one = format!("{}{}", opens(MAX_DEPTH), closes(MAX_DEPTH));
+    let src = format!("{one}\n{one}\n{one}\n");
+    ok(&src, &format!("<{one} {one} {one}>"));
+}
+
+#[test]
+fn test_wide_flat_list_is_not_depth_limited() {
+    let src = format!("({})", "a ".repeat(10_000));
+    assert_eq!(total_errors(&src), 0);
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_quotes_at_exactly_max_depth_parse_cleanly() {
+    let src = format!("{}a", quotes(MAX_DEPTH));
+    ok(&src, &format!("<{}a>", quotes(MAX_DEPTH)));
+}
+
+#[test]
+fn test_quotes_one_past_max_depth_skip_the_last_quote_and_operand() {
+    let src = format!("{}a", quotes(MAX_DEPTH + 1));
+    check(
+        &src,
+        &format!("<{}!>", quotes(MAX_DEPTH)),
+        &[(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)],
+    );
+    let skipped: Vec<_> = outline(&src)
+        .into_iter()
+        .filter(|(label, _, _)| *label == "skipped")
+        .collect();
+    assert_eq!(skipped, [("skipped", MAX_DEPTH, MAX_DEPTH + 2)]);
+}
+
+#[test]
+fn test_lists_and_quotes_share_one_depth_budget() {
+    // `'(` repeated: quote, list, quote, list... The 257th construct is the
+    // quote that starts pair 129.
+    let half = MAX_DEPTH / 2;
+    let pairs = half + 72;
+    let src = format!("{}{}", "'(".repeat(pairs), closes(pairs));
+    check(
+        &src,
+        &format!("<{}{{ SKIPPED }}{}>", "'(".repeat(half), closes(half)),
+        &[(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)],
+    );
+    let skipped: Vec<_> = outline(&src)
+        .into_iter()
+        .filter(|(label, _, _)| *label == "skipped")
+        .collect();
+    // Skipped runs from the quote to the `)` matching the pair-129 list.
+    assert_eq!(
+        skipped,
+        [("skipped", MAX_DEPTH, 2 * pairs + (pairs - half))]
+    );
+}
+
+#[test]
+fn test_list_inside_quote_inside_list_counts_each_level() {
+    // Outer list + (MAX_DEPTH - 1) quotes is exactly full. Adding one list
+    // inside the last quote is the first too-deep construct.
+    let src = format!("({}(x))", quotes(MAX_DEPTH - 1));
+    let at = MAX_DEPTH; // offset of the inner `(`
+    check(
+        &src,
+        &format!("<({}{{ SKIPPED }})>", quotes(MAX_DEPTH - 1)),
+        &[(TooDeepRecursion, at, at + 1)],
+    );
+}
+
+#[test]
+fn test_huge_open_paren_flood_gives_bounded_errors_and_no_crash() {
+    let n = 100_000;
+    let src = opens(n);
+    // One TooDeepRecursion, plus one UnclosedList for each of the MAX_DEPTH
+    // parsed ancestors. Nothing grows with n.
+    assert_eq!(count_errors(&src, TooDeepRecursion), 1);
+    assert_eq!(count_errors(&src, UnclosedList), MAX_DEPTH);
+    assert_eq!(total_errors(&src), MAX_DEPTH + 1);
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_huge_quote_flood_gives_exactly_one_error_and_no_crash() {
+    let n = 100_000;
+    let src = quotes(n);
+    check(
+        &src,
+        &format!("<{}{{ SKIPPED }}>", quotes(MAX_DEPTH)),
+        &[(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)],
+    );
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_huge_quote_flood_with_operand_gives_exactly_one_error() {
+    let src = format!("{}a", quotes(100_000));
+    assert_eq!(total_errors(&src), 1);
+    assert_eq!(count_errors(&src, TooDeepRecursion), 1);
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_huge_balanced_nesting_gives_exactly_one_error() {
+    let n = 100_000;
+    let src = format!("{}{}", opens(n), closes(n));
+    assert_eq!(total_errors(&src), 1);
+    assert_eq!(count_errors(&src, TooDeepRecursion), 1);
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_deep_form_interrupted_by_column_zero_defun() {
+    // The skip stops at the recovery point. Every parsed ancestor is unclosed.
+    // The defun is parsed as its own top-level form.
+    let src = format!("{}\n(defun f () 1)\n", opens(300));
+    let mut errs: Vec<Err> = vec![(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)];
+    errs.extend(vec![(UnclosedList, 300, 300); MAX_DEPTH]);
+    check(
+        &src,
+        &format!(
+            "<{}{{ SKIPPED }}{} (defun f () 1)>",
+            opens(MAX_DEPTH),
+            closes(MAX_DEPTH)
+        ),
+        &errs,
+    );
+    let skipped: Vec<_> = outline(&src)
+        .into_iter()
+        .filter(|(label, _, _)| *label == "skipped")
+        .collect();
+    assert_eq!(skipped, [("skipped", MAX_DEPTH, 300)]);
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_too_deep_quote_chain_does_not_swallow_a_column_zero_defun() {
+    // Inside an open list, a quote with no operand before a recovery point
+    // is a missing operand, not a quote of the defun. The skip must agree.
+    let src = format!("({}\n(defun f () 1)", quotes(300));
+    check(
+        &src,
+        &format!("<({}{{ SKIPPED }}) (defun f () 1)>", quotes(MAX_DEPTH - 1)),
+        &[
+            (TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1),
+            (UnclosedList, 301, 301),
+        ],
+    );
+    assert_well_nested(&src);
+}
+
+#[test]
+fn test_deep_form_interrupted_by_indented_defun_is_not_a_recovery_point() {
+    // An indented `(defun` does not end a skip, same as in parse_list.
+    let src = format!("{}\n  (defun f () 1){}", opens(300), closes(300));
+    assert_eq!(total_errors(&src), 1);
+    assert_eq!(count_errors(&src, TooDeepRecursion), 1);
+}
+
+#[test]
+fn test_deep_input_survives_the_well_nested_property() {
+    assert_well_nested(&format!(
+        "{}{}",
+        opens(MAX_DEPTH + 10),
+        closes(MAX_DEPTH + 10)
+    ));
+    assert_well_nested(&format!("{}a", quotes(MAX_DEPTH + 10)));
+    assert_well_nested(&format!("{}x", "'(".repeat(MAX_DEPTH)));
+}
+
+// ---------------------------------------------------------------
 // robustness
 // ---------------------------------------------------------------
 
@@ -796,6 +1086,6 @@ fn test_never_panics_on_garbage() {
         "99999999999999999999",
     ] {
         let tokens = tokenize(s);
-        let _ = parse(&tokens, s);
+        let _ = parse(tokens, s);
     }
 }

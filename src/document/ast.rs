@@ -3,7 +3,7 @@ use crate::document::{
     lexer::{ErrorKind, Token, TokenKind},
 };
 
-pub fn parse<'a>(tokens: &'a [Token], source: &'a str) -> Ast {
+pub fn parse(tokens: Vec<Token>, source: &str) -> Ast {
     let builder = AstBuilder::new(tokens, source);
     let ast = builder.parse();
     debug_assert!(ast.root.root_count() == 1);
@@ -12,38 +12,43 @@ pub fn parse<'a>(tokens: &'a [Token], source: &'a str) -> Ast {
 
 struct AstBuilder<'a> {
     source: &'a str,
-    tokens: Vec<&'a Token>,
+    tokens: Vec<Token>,
     position: usize,
     previous_end: usize,
     errors: Vec<ParseError>,
+    depth: usize,
 }
 
+const MAX_DEPTH: usize = 256;
+
 impl<'a> AstBuilder<'a> {
-    fn new(tokens: &'a [Token], source: &'a str) -> Self {
-        let mut toks = Vec::new();
+    fn new(tokens: Vec<Token>, source: &'a str) -> Self {
         let mut errors = Vec::new();
-        for token in tokens {
-            match token.kind {
-                t if t.is_trivial() => {}
+        let tokens = tokens
+            .into_iter()
+            .filter(|token| match token.kind {
+                t if t.is_trivial() => false,
                 TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
                     errors.push(ParseError::new(
                         token.span,
                         ParseErrorKind::UnterminatedBlockComment,
                     ));
+                    false
                 }
-                _ => toks.push(token),
-            }
-        }
+                _ => true,
+            })
+            .collect();
         Self {
             source,
-            tokens: toks,
+            tokens,
             position: 0,
             previous_end: 0,
             errors,
+            depth: 0,
         }
     }
 
-    fn peek(&self) -> Option<&&Token> {
+    fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.position)
     }
 
@@ -58,14 +63,12 @@ impl<'a> AstBuilder<'a> {
     /// Check if the current position is an open paren at the start of a line or
     /// following a CR or LF character and the next token is a defun symbol.
     fn at_recover_point(&self) -> bool {
-        if self.peek().is_none() {
-            true
-        } else if let Some(Token {
+        if let Some(Token {
             span: cur_span,
             kind: TokenKind::OpenParen,
         }) = self.peek()
             && (cur_span.start == 0
-                || ["\n", "\r"].contains(&&self.source[cur_span.start - 1..cur_span.start]))
+                || b"\n\r".contains(&self.source.as_bytes()[cur_span.start - 1]))
             && let Some(Token {
                 span: next_span,
                 kind: TokenKind::Symbol,
@@ -122,8 +125,20 @@ impl<'a> AstBuilder<'a> {
         let Token { span, kind } = self.peek().unwrap();
         let span = *span;
         match kind {
-            TokenKind::OpenParen => self.parse_list(),
-            TokenKind::Quote => self.parse_quote(in_list),
+            TokenKind::OpenParen | TokenKind::Quote => {
+                if self.depth > MAX_DEPTH {
+                    return self.skip(in_list);
+                };
+                let t_kind = *kind;
+                self.depth += 1;
+                let node = if matches!(t_kind, TokenKind::OpenParen) {
+                    self.parse_list()
+                } else {
+                    self.parse_quote(in_list)
+                };
+                self.depth -= 1;
+                node
+            }
             TokenKind::String => {
                 self.advance();
                 Node::new(span, NodeKind::String)
@@ -170,8 +185,65 @@ impl<'a> AstBuilder<'a> {
             | TokenKind::Error(ErrorKind::UnterminatedBlockComment)
             | TokenKind::CloseParen => {
                 tracing::error!("Somehow got a filtered token. {kind:?}");
+                unreachable!("Got {kind:?} in parse_form.")
+            }
+        }
+    }
+
+    fn skip(&mut self, in_list: bool) -> Node {
+        let start = self.peek().expect("Should not be skipping EOF").span;
+        self.errors
+            .push(ParseError::new(start, ParseErrorKind::TooDeepRecursion));
+        self.skip_form(in_list);
+        Node::new((start.start..self.previous_end).into(), NodeKind::Skipped)
+    }
+
+    fn skip_form(&mut self, in_list: bool) {
+        while let Some(Token {
+            kind: TokenKind::Quote,
+            ..
+        }) = self.peek()
+        {
+            self.advance();
+        }
+        if in_list && self.at_recover_point() {
+            return;
+        }
+        match self.peek() {
+            Some(Token {
+                kind: TokenKind::OpenParen,
+                ..
+            }) => {
+                let mut open = 0;
+                while let Some(token) = self.peek() {
+                    match token.kind {
+                        TokenKind::OpenParen => {
+                            open += 1;
+                            self.advance();
+                        }
+                        TokenKind::CloseParen => {
+                            open -= 1;
+                            self.advance();
+                            if open == 0 {
+                                break;
+                            }
+                        }
+                        _ => {
+                            self.advance();
+                        }
+                    }
+                    if open > 0 && self.at_recover_point() {
+                        break;
+                    }
+                }
+            }
+            Some(Token {
+                kind: TokenKind::CloseParen,
+                ..
+            })
+            | None => {}
+            _ => {
                 self.advance();
-                self.parse_form(in_list)
             }
         }
     }
@@ -184,10 +256,6 @@ impl<'a> AstBuilder<'a> {
         while let Some(token) = self.peek() {
             match token.kind {
                 t if t.is_trivial() => {
-                    tracing::error!("Somehow got a filtered token. {:?}", token.kind);
-                    self.advance();
-                }
-                TokenKind::Error(ErrorKind::UnterminatedBlockComment) => {
                     tracing::error!("Somehow got a filtered token. {:?}", token.kind);
                     self.advance();
                 }
@@ -332,6 +400,7 @@ enum NodeKind {
     Nil,
     Quote(Box<Node>),
     Missing,
+    Skipped,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -354,6 +423,7 @@ enum ParseErrorKind {
     UnmatchedCloseParen,
     UnterminatedString,
     UnterminatedBlockComment,
+    TooDeepRecursion,
 }
 
 #[cfg(test)]
