@@ -904,7 +904,7 @@ fn test_quotes_one_past_max_depth_skip_the_last_quote_and_operand() {
     let src = format!("{}a", quotes(MAX_DEPTH + 1));
     check(
         &src,
-        &format!("<{}!>", quotes(MAX_DEPTH)),
+        &format!("<{}{{ SKIPPED }}>", quotes(MAX_DEPTH)),
         &[(TooDeepRecursion, MAX_DEPTH, MAX_DEPTH + 1)],
     );
     let skipped: Vec<_> = outline(&src)

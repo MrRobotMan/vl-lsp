@@ -126,7 +126,7 @@ impl<'a> AstBuilder<'a> {
         let span = *span;
         match kind {
             TokenKind::OpenParen | TokenKind::Quote => {
-                if self.depth > MAX_DEPTH {
+                if self.depth >= MAX_DEPTH {
                     return self.skip(in_list);
                 };
                 let t_kind = *kind;
