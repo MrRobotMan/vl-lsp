@@ -53,7 +53,7 @@ use ParseErrorKind::*;
 type Err = (ParseErrorKind, usize, usize); // (kind, start, end)
 
 fn check(src: &str, expected_tree: &str, expected_errors: &[Err]) {
-    let tokens = tokenize(src);
+    let (tokens, _) = tokenize(src);
     let ast = parse(tokens, src);
     assert_eq!(shape(&ast, src), expected_tree, "tree for {src:?}");
     let mut errs: Vec<Err> = ast
@@ -135,7 +135,7 @@ impl NodeKind {
 /// Labels: "root" "list" "quote" "dot" "sym" "int" "real" "str" "nil" "t"
 /// "missing". Dot is an ordinary child of its List.
 fn outline(src: &str) -> Vec<(&'static str, usize, usize)> {
-    let tokens = tokenize(src);
+    let (tokens, _) = tokenize(src);
     let ast = parse(tokens, src);
     label(&ast.root)
 }
@@ -174,7 +174,7 @@ fn label(node: &Node) -> Vec<(&'static str, usize, usize)> {
 ///   - every child span is inside its parent's span
 ///   - sibling spans are ordered and non-overlapping
 fn assert_well_nested(src: &str) {
-    let tokens = tokenize(src);
+    let (tokens, _) = tokenize(src);
     let ast = parse(tokens, src);
     let mut prev_end = None;
     assert_eq!(
@@ -780,7 +780,7 @@ fn quotes(n: usize) -> String {
 }
 
 fn count_errors(src: &str, kind: ParseErrorKind) -> usize {
-    let tokens = tokenize(src);
+    let (tokens, _) = tokenize(src);
     parse(tokens, src)
         .errors
         .iter()
@@ -789,7 +789,7 @@ fn count_errors(src: &str, kind: ParseErrorKind) -> usize {
 }
 
 fn total_errors(src: &str) -> usize {
-    let tokens = tokenize(src);
+    let (tokens, _) = tokenize(src);
     parse(tokens, src).errors.len()
 }
 
@@ -1085,7 +1085,7 @@ fn test_never_panics_on_garbage() {
         "NIL",
         "99999999999999999999",
     ] {
-        let tokens = tokenize(s);
+        let (tokens, _) = tokenize(s);
         let _ = parse(tokens, s);
     }
 }

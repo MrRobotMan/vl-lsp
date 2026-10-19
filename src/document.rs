@@ -90,7 +90,7 @@ impl Document {
 
     fn process(&mut self) {
         self.get_line_starts();
-        self.tokens = tokenize(&self.text);
+        (self.tokens, _) = tokenize(&self.text);
     }
 
     fn get_line_starts(&mut self) {

@@ -3,7 +3,7 @@ use std::{iter::Peekable, str::CharIndices};
 use super::Span;
 use tracing::error;
 
-pub fn tokenize(source: &str) -> Vec<Token> {
+pub fn tokenize(source: &str) -> (Vec<Token>, Balance) {
     let it = source.char_indices().peekable();
     Lexer::new(source, it).tokens()
 }
@@ -12,6 +12,13 @@ pub fn tokenize(source: &str) -> Vec<Token> {
 pub struct Token {
     pub(crate) span: Span,
     pub(crate) kind: TokenKind,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Balance {
+    Ok,
+    Unbalanced,
+    Unterminated,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -117,35 +124,52 @@ impl<'a> Lexer<'a> {
         Self { source, it }
     }
 
-    fn tokens(mut self) -> Vec<Token> {
+    fn tokens(mut self) -> (Vec<Token>, Balance) {
+        let mut balance = Balance::Ok;
+        let mut balance_count = 0;
         let mut tokens = Vec::new();
         loop {
-            match self.peek() {
+            let ch = self.peek();
+            match ch {
                 None => break,
                 Some('\r') | Some('\n') => self.newline(&mut tokens),
                 Some(' ') | Some('\t') => self.whitespace(&mut tokens),
-                Some('(') | Some(')') | Some('\'') => self.atom(&mut tokens),
-                Some('"') => self.string(&mut tokens),
-                Some(';') => self.comment(&mut tokens),
+                Some('(') | Some(')') | Some('\'') => {
+                    self.atom(&mut tokens, &mut balance, &mut balance_count)
+                }
+                Some('"') => self.string(&mut tokens, &mut balance),
+                Some(';') => self.comment(&mut tokens, &mut balance),
                 _ => self.word(&mut tokens),
             }
         }
-        tokens
+        if balance_count != 0 && balance == Balance::Ok {
+            balance = Balance::Unbalanced;
+        }
+        (tokens, balance)
     }
 
-    fn atom(&mut self, tokens: &mut Vec<Token>) {
+    fn atom(&mut self, tokens: &mut Vec<Token>, balance: &mut Balance, balance_count: &mut i32) {
         let (index, atom) = self.next();
         let step = self.next_start();
         let span = (index..step).into();
         let kind = match atom {
-            '(' => TokenKind::OpenParen,
-            ')' => TokenKind::CloseParen,
+            '(' => {
+                *balance_count += 1;
+                TokenKind::OpenParen
+            }
+            ')' => {
+                *balance_count -= 1;
+                TokenKind::CloseParen
+            }
             '\'' => TokenKind::Quote,
             _ => {
                 error!("Tried to process {atom} as atom.");
                 return;
             }
         };
+        if balance == &Balance::Ok && *balance_count < 0 {
+            *balance = Balance::Unbalanced;
+        }
         tokens.push(Token { span, kind })
     }
 
@@ -173,10 +197,10 @@ impl<'a> Lexer<'a> {
         });
     }
 
-    fn comment(&mut self, tokens: &mut Vec<Token>) {
+    fn comment(&mut self, tokens: &mut Vec<Token>, balance: &mut Balance) {
         let (start, _) = self.next(); // Comment start, ;
         match self.peek() {
-            Some('|') => self.block_comment(start, tokens),
+            Some('|') => self.block_comment(start, tokens, balance),
             _ => self.line_comment(start, tokens),
         }
     }
@@ -192,7 +216,7 @@ impl<'a> Lexer<'a> {
         });
     }
 
-    fn block_comment(&mut self, start: usize, tokens: &mut Vec<Token>) {
+    fn block_comment(&mut self, start: usize, tokens: &mut Vec<Token>, balance: &mut Balance) {
         let _start_pipe = self.next(); // Pipe from ;| opening.
         loop {
             match self.peek() {
@@ -212,6 +236,9 @@ impl<'a> Lexer<'a> {
                     let end = self.next_start();
                     let span = (start..end).into();
                     let kind = TokenKind::Error(ErrorKind::UnterminatedBlockComment);
+                    if balance == &Balance::Ok {
+                        *balance = Balance::Unterminated;
+                    }
                     tokens.push(Token { span, kind });
                     return;
                 }
@@ -222,7 +249,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn string(&mut self, tokens: &mut Vec<Token>) {
+    fn string(&mut self, tokens: &mut Vec<Token>, balance: &mut Balance) {
         let (start, _) = self.next();
         let mut escape_next = false;
         loop {
@@ -230,6 +257,9 @@ impl<'a> Lexer<'a> {
                 None => {
                     let span = (start..self.next_start()).into();
                     let kind = TokenKind::Error(ErrorKind::UnterminatedString);
+                    if balance == &Balance::Ok {
+                        *balance = Balance::Unterminated;
+                    }
                     tokens.push(Token { span, kind });
                     return;
                 }
@@ -306,13 +336,13 @@ mod tests {
     use TokenKind::*;
 
     fn kinds(src: &str) -> Vec<TokenKind> {
-        tokenize(src).into_iter().map(|t| t.kind).collect()
+        tokenize(src).0.into_iter().map(|t| t.kind).collect()
     }
 
     // --- structure ---
     #[test]
     fn test_empty_input() {
-        assert!(tokenize("").is_empty());
+        assert!(tokenize("").0.is_empty());
     }
 
     #[test]
@@ -542,10 +572,13 @@ mod tests {
     fn test_unterminated_string() {
         assert_eq!(
             tokenize("\"abc"),
-            [Token {
-                span: (0..4).into(),
-                kind: Error(UnterminatedString)
-            }]
+            (
+                vec![Token {
+                    span: (0..4).into(),
+                    kind: Error(UnterminatedString)
+                }],
+                Balance::Unterminated
+            )
         );
     }
 
@@ -620,10 +653,13 @@ mod tests {
     fn test_unterminated_block_comment() {
         assert_eq!(
             tokenize(";| oops"),
-            [Token {
-                span: (0..7).into(),
-                kind: Error(UnterminatedBlockComment)
-            }]
+            (
+                vec![Token {
+                    span: (0..7).into(),
+                    kind: Error(UnterminatedBlockComment)
+                }],
+                Balance::Unterminated
+            )
         );
     }
 
@@ -631,7 +667,7 @@ mod tests {
     #[test]
     fn test_spans_simple() {
         assert_eq!(
-            tokenize("(ab)"),
+            tokenize("(ab)").0,
             [
                 Token {
                     span: (0..1).into(),
@@ -651,14 +687,14 @@ mod tests {
 
     #[test]
     fn test_spans_with_whitespace() {
-        let t = tokenize("a   b");
+        let t = tokenize("a   b").0;
         assert_eq!((t[2].span.start, t[2].span.end), (4, 5));
     }
 
     #[test]
     fn test_spans_multibyte_utf8() {
         // 'é' is 2 bytes, so the string token is 4 bytes and 'x' starts at byte 5
-        let t = tokenize("\"é\" x");
+        let t = tokenize("\"é\" x").0;
         assert_eq!(t[0].span, (0..4).into());
         assert_eq!(t[1].span, (4..5).into());
         assert_eq!(t[2].span, (5..6).into());
@@ -667,7 +703,7 @@ mod tests {
     #[test]
     fn test_spans_ordered_and_in_bounds() {
         let src = "(defun c:f (/ a) ; c\n (setq a 1.5 s \"x\"))";
-        let tokens = tokenize(src);
+        let tokens = tokenize(src).0;
         for t in tokens {
             assert!(t.span.end <= src.len());
         }
@@ -681,5 +717,24 @@ mod tests {
         ] {
             let _ = tokenize(s);
         }
+    }
+
+    // --- Balance ---
+    #[test]
+    fn test_unbalanced_extra_closing() {
+        let balance = tokenize("(defun a()\nif((eq 1 2)(t))))").1;
+        assert_eq!(balance, Balance::Unbalanced);
+    }
+
+    #[test]
+    fn test_unbalanced_extra_opening() {
+        let balance = tokenize("(()").1;
+        assert_eq!(balance, Balance::Unbalanced);
+    }
+
+    #[test]
+    fn test_balanced_parens_in_quote() {
+        let balance = tokenize(r#""(""#).1;
+        assert_eq!(balance, Balance::Ok);
     }
 }
