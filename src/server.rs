@@ -24,10 +24,14 @@ impl Backend {
         }
     }
 
-    async fn log_debug<S: AsRef<str>>(&self, message: S) {
-        let message = message.as_ref();
+    async fn log_debug<S: Into<String>>(&self, message: S, path: Option<&str>) {
         #[cfg(debug_assertions)]
         {
+            let mut message = message.into();
+            if let Some(tail) = path {
+                message.push(' ');
+                message.push_str(tail);
+            }
             tracing::debug!(message);
         }
     }
@@ -53,7 +57,7 @@ impl Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, _params: InitializeParams) -> jsonrpc::Result<InitializeResult> {
-        self.log_debug("Initialize Requested").await;
+        self.log_debug("Initialize Requested", None).await;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -70,7 +74,7 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
-        self.log_debug("Shutdown Requested").await;
+        self.log_debug("Shutdown Requested", None).await;
         Ok(())
     }
 
@@ -84,9 +88,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        #[cfg(debug_assertions)]
         {
-            self.log_debug(format!("Changed {:?}", params.content_changes))
+            self.log_debug("Changed", Some(params.text_document.uri.as_str()))
                 .await;
         }
         let Some(mut doc) = self.documents.get_mut(&params.text_document.uri) else {
@@ -105,7 +108,7 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         #[cfg(debug_assertions)]
         {
-            self.log_debug(format!("Saved: {params:?}")).await;
+            self.log_debug(format!("Saved: {params:?}"), None).await;
         }
     }
 
